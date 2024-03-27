@@ -10,6 +10,20 @@ import { getTranslation } from '@payloadcms/translations'
 
 import { formatDate } from '../utilities/formatDate.js'
 
+function getTitle(useAsTitle, data) {
+  const getValue = (obj, path) => {
+    return path.split('.').reduce((acc, key) => {
+      if (acc && typeof acc === 'object' && key in acc) {
+        return acc[key]
+      } else {
+        return undefined
+      }
+    }, obj)
+  }
+
+  return getValue(data, useAsTitle)
+}
+
 export const formatDocTitle = ({
   collectionConfig,
   data,
@@ -31,7 +45,7 @@ export const formatDocTitle = ({
     const useAsTitle = collectionConfig?.admin?.useAsTitle
 
     if (useAsTitle) {
-      title = data?.[useAsTitle] || title
+      title = getTitle(useAsTitle, data)
 
       if (title) {
         const fieldConfig = collectionConfig.fields.find(

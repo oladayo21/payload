@@ -1,4 +1,5 @@
 /* eslint-disable no-param-reassign */
+import type { DBQueryConfig } from 'drizzle-orm'
 import type { Field } from 'payload/types'
 
 import { fieldAffectsData, tabHasName } from 'payload/types'
@@ -11,7 +12,7 @@ import { getTableName } from '../schema/getTableName.js'
 type TraverseFieldArgs = {
   _locales: Record<string, unknown>
   adapter: PostgresAdapter
-  currentArgs: Record<string, unknown>
+  currentArgs: DBQueryConfig<'many', true, any, any>
   currentTableName: string
   depth?: number
   fields: Field[]
@@ -32,6 +33,14 @@ export const traverseFields = ({
   topLevelTableName,
 }: TraverseFieldArgs) => {
   fields.forEach((field) => {
+    // handle simple relationship
+    if (
+      field.type === 'upload' ||
+      (field.type === 'relationship' && !field.hasMany && typeof field.relationTo === 'string')
+    ) {
+      currentArgs.with[`${path}${field.name}`] = true
+    }
+
     if (field.type === 'collapsible' || field.type === 'row') {
       traverseFields({
         _locales,

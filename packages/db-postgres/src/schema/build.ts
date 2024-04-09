@@ -19,6 +19,8 @@ import { parentIDColumnMap } from './parentIDColumnMap.js'
 import { setColumnID } from './setColumnID.js'
 import { traverseFields } from './traverseFields.js'
 
+export type RelationMap = Map<string, { target: string; type: 'many' | 'one' }>
+
 type Args = {
   adapter: PostgresAdapter
   baseColumns?: Record<string, PgColumnBuilder>
@@ -29,7 +31,7 @@ type Args = {
   disableNotNull: boolean
   disableUnique: boolean
   fields: Field[]
-  rootRelationsToBuild?: Map<string, string>
+  rootRelationsToBuild?: RelationMap
   rootRelationships?: Set<string>
   rootTableIDColType?: string
   rootTableName?: string
@@ -41,7 +43,7 @@ type Args = {
 type Result = {
   hasManyNumberField: 'index' | boolean
   hasManyTextField: 'index' | boolean
-  relationsToBuild: Map<string, string>
+  relationsToBuild: RelationMap
 }
 
 export const buildTable = ({
@@ -85,7 +87,7 @@ export const buildTable = ({
   let relationshipsTable: GenericTable | PgTableWithColumns<any>
 
   // Drizzle relations
-  const relationsToBuild: Map<string, string> = new Map()
+  const relationsToBuild: RelationMap = new Map()
 
   const idColType: IDType = setColumnID({ adapter, columns, fields })
 
@@ -275,96 +277,99 @@ export const buildTable = ({
     adapter.relations[`relations_${numbersTableName}`] = numbersTableRelations
   }
 
-  if (buildRelationships) {
-    if (relationships.size) {
-      const relationshipColumns: Record<string, PgColumnBuilder> = {
-        id: serial('id').primaryKey(),
-        order: integer('order'),
-        parent: parentIDColumnMap[idColType]('parent_id')
-          .references(() => table.id, { onDelete: 'cascade' })
-          .notNull(),
-        path: varchar('path').notNull(),
-      }
+  if (buildRelationships && relationships.size) {
+    const relationshipColumns: Record<string, PgColumnBuilder> = {
+      id: serial('id').primaryKey(),
+      order: integer('order'),
+      parent: parentIDColumnMap[idColType]('parent_id')
+        .references(() => table.id, { onDelete: 'cascade' })
+        .notNull(),
+      path: varchar('path').notNull(),
+    }
 
-      if (hasLocalizedRelationshipField) {
-        relationshipColumns.locale = adapter.enums.enum__locales('locale')
+    if (hasLocalizedRelationshipField) {
+      relationshipColumns.locale = adapter.enums.enum__locales('locale')
+    }
+
+    relationships.forEach((relationTo) => {
+      const relationshipConfig = adapter.payload.collections[relationTo].config
+      const formattedRelationTo = getTableName({
+        adapter,
+        config: relationshipConfig,
+        throwValidationError: true,
+      })
+      let colType = adapter.idType === 'uuid' ? 'uuid' : 'integer'
+      const relatedCollectionCustomID = relationshipConfig.fields.find(
+        (field) => fieldAffectsData(field) && field.name === 'id',
+      )
+      if (relatedCollectionCustomID?.type === 'number') colType = 'numeric'
+      if (relatedCollectionCustomID?.type === 'text') colType = 'varchar'
+
+      relationshipColumns[`${relationTo}ID`] = parentIDColumnMap[colType](
+        `${formattedRelationTo}_id`,
+      ).references(() => adapter.tables[formattedRelationTo].id, { onDelete: 'cascade' })
+    })
+
+    const relationshipsTableName = `${tableName}${adapter.relationshipsSuffix}`
+
+    relationshipsTable = adapter.pgSchema.table(
+      relationshipsTableName,
+      relationshipColumns,
+      (cols) => {
+        const result: Record<string, unknown> = {
+          order: index(`${relationshipsTableName}_order_idx`).on(cols.order),
+          parentIdx: index(`${relationshipsTableName}_parent_idx`).on(cols.parent),
+          pathIdx: index(`${relationshipsTableName}_path_idx`).on(cols.path),
+        }
+
+        if (hasLocalizedRelationshipField) {
+          result.localeIdx = index(`${relationshipsTableName}_locale_idx`).on(cols.locale)
+        }
+
+        return result
+      },
+    )
+
+    adapter.tables[relationshipsTableName] = relationshipsTable
+
+    const relationshipsTableRelations = relations(relationshipsTable, ({ one }) => {
+      const result: Record<string, Relation<string>> = {
+        parent: one(table, {
+          fields: [relationshipsTable.parent],
+          references: [table.id],
+          relationName: '_rels',
+        }),
       }
 
       relationships.forEach((relationTo) => {
-        const relationshipConfig = adapter.payload.collections[relationTo].config
-        const formattedRelationTo = getTableName({
+        const relatedTableName = getTableName({
           adapter,
-          config: relationshipConfig,
+          config: adapter.payload.collections[relationTo].config,
           throwValidationError: true,
         })
-        let colType = adapter.idType === 'uuid' ? 'uuid' : 'integer'
-        const relatedCollectionCustomID = relationshipConfig.fields.find(
-          (field) => fieldAffectsData(field) && field.name === 'id',
-        )
-        if (relatedCollectionCustomID?.type === 'number') colType = 'numeric'
-        if (relatedCollectionCustomID?.type === 'text') colType = 'varchar'
-
-        relationshipColumns[`${relationTo}ID`] = parentIDColumnMap[colType](
-          `${formattedRelationTo}_id`,
-        ).references(() => adapter.tables[formattedRelationTo].id, { onDelete: 'cascade' })
-      })
-
-      const relationshipsTableName = `${tableName}${adapter.relationshipsSuffix}`
-
-      relationshipsTable = adapter.pgSchema.table(
-        relationshipsTableName,
-        relationshipColumns,
-        (cols) => {
-          const result: Record<string, unknown> = {
-            order: index(`${relationshipsTableName}_order_idx`).on(cols.order),
-            parentIdx: index(`${relationshipsTableName}_parent_idx`).on(cols.parent),
-            pathIdx: index(`${relationshipsTableName}_path_idx`).on(cols.path),
-          }
-
-          if (hasLocalizedRelationshipField) {
-            result.localeIdx = index(`${relationshipsTableName}_locale_idx`).on(cols.locale)
-          }
-
-          return result
-        },
-      )
-
-      adapter.tables[relationshipsTableName] = relationshipsTable
-
-      const relationshipsTableRelations = relations(relationshipsTable, ({ one }) => {
-        const result: Record<string, Relation<string>> = {
-          parent: one(table, {
-            fields: [relationshipsTable.parent],
-            references: [table.id],
-            relationName: '_rels',
-          }),
-        }
-
-        relationships.forEach((relationTo) => {
-          const relatedTableName = getTableName({
-            adapter,
-            config: adapter.payload.collections[relationTo].config,
-            throwValidationError: true,
-          })
-          const idColumnName = `${relationTo}ID`
-          result[idColumnName] = one(adapter.tables[relatedTableName], {
-            fields: [relationshipsTable[idColumnName]],
-            references: [adapter.tables[relatedTableName].id],
-          })
+        const idColumnName = `${relationTo}ID`
+        result[idColumnName] = one(adapter.tables[relatedTableName], {
+          fields: [relationshipsTable[idColumnName]],
+          references: [adapter.tables[relatedTableName].id],
         })
-
-        return result
       })
 
-      adapter.relations[`relations_${relationshipsTableName}`] = relationshipsTableRelations
-    }
+      return result
+    })
+
+    adapter.relations[`relations_${relationshipsTableName}`] = relationshipsTableRelations
   }
 
-  const tableRelations = relations(table, ({ many }) => {
+  const tableRelations = relations(table, ({ many, one }) => {
     const result: Record<string, Relation<string>> = {}
 
-    relationsToBuild.forEach((val, key) => {
-      result[key] = many(adapter.tables[val])
+    relationsToBuild.forEach(({ type, target }, key) => {
+      if (type === 'one') {
+        result[key] = one(adapter.tables[target])
+      }
+      if (type === 'many') {
+        result[key] = many(adapter.tables[target])
+      }
     })
 
     if (hasLocalizedField) {

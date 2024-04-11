@@ -19,6 +19,12 @@ export const PostsCollection: CollectionConfig = {
       fields: [],
     },
     {
+      name: 'category',
+      type: 'relationship',
+      localized: true,
+      relationTo: 'categories',
+    },
+    {
       name: 'associatedMedia',
       type: 'upload',
       access: {
